@@ -1,93 +1,200 @@
-# spinmaster
+# 🎬 AI Media Producer: Expressive Video & Image Translator
 
+Welcome to the **AI Media Producer** project. This is a state-of-the-art multimodal translation system designed for 2026. It can translate product images while preserving aesthetics and perform high-fidelity video dubbing that captures the original speaker's emotional "soul" while keeping the original background music and sound effects.
 
+---
 
-## Getting started
+## Workflow
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+### Image workflow
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+  - User uploads image and it is immediately intercepted by plugin: SaveFilesAsArtifactsPlugin
+  - User asks to list files
+  - User then asks to rename the file they just uploaded to a name they choose
+  - User then asks to translate the renamed image to a certain language
+  - The agent saves the new image using preformatted naming convention and return it to the user
 
-## Add your files
+## 🧩 Project Components
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+### 1. The Media Agent (`agent.py`)
 
+The "Brain" of the operation. Built using the **Google ADK (Agent Development Kit)**, this agent interacts with the user via a web interface.
+
+* **File Management:** Saves uploads and lists session artifacts in Google Cloud Storage (GCS).
+* **Routing:** Detects user intent. It routes image translation tasks directly to the Gemini 3 Pro model and video translation tasks to the dedicated Cloud Run service.
+* **UI Synchronization:** Triggers automatic display updates so the user sees translated media immediately in the UI.
+
+### 2. The Video Tool (`vid_to_bytes.py`)
+
+The "Bridge." This is an asynchronous Python tool used by the agent to stream large video files as raw bytes to the Cloud Run service. It handles the high-timeout HTTP requests required for complex AI audio processing.
+
+### 3. The Video Translator Service (`main.py` on Cloud Run)
+
+The "Engine Room." A high-performance FastAPI service deployed on **Cloud Run (Gen 2)** with **24GiB of RAM**. It orchestrates a 5-Phase pipeline to perform "Emotional Dubbing."
+
+---
+
+## ⚙️ How the Video Translator Service Works
+
+The service follows a sophisticated pipeline to ensure the translated audio is perfectly synced and emotionally identical to the source.
+
+### Phase 1: The "Ears" (Chirp 3 STT)
+
+The service uses **Chirp 3**, Google’s most advanced Speech-to-Text model. It transcribes the English audio and, most importantly, provides **word-level timestamps**. This tells the service exactly which millisecond every word starts and ends.
+
+### Phase 2: The "Director" (Gemini 2.5 Pro Multimodal)
+
+The video is sent to **Gemini 2.5 Pro**. The model "watches" the video and "listens" to the English narrator. It generates a **Director’s Note** for every segment (e.g., *"Speak with high-pitched excitement and a vocal smile"*).
+
+### Phase 3: The "Voice" (Gemini 2.5 Pro TTS)
+
+The English text is sent to **Gemini 2.5 Pro TTS**. Using the Director's Note from Phase 2, the model generates a Spanish (or other language) version.
+
+* **Time-Alignment:** If the Spanish translation is longer than the English original, the service applies an **FFmpeg `atempo` filter** to speed up the voice without changing the pitch, ensuring it fits the video perfectly.
+
+### Phase 4: Stem Separation (Demucs)
+
+To keep the background noise (music, crowds, car engines), the service uses **Demucs (AI Source Separation)**.
+
+* It splits the original audio into two "Stems": **Vocals** and **No Vocals**.
+* The original English **Vocals** are discarded.
+* The original **No Vocals** (Background) is kept.
+
+### Phase 5: Production (FFmpeg Muxing)
+
+The service uses **FFmpeg** to mix the new Spanish voice stem with the original background stem. It then performs a **Hard Swap**, mapping the original video pixels to the new audio mix, resulting in a clean, professional Ad with zero English bleed-through.
+
+---
+
+## 🛠 Required Google Cloud Services & APIs
+
+You must enable the following APIs in your Google Cloud Project:
+
+1. **Cloud Run:** To host the heavy-duty processing service.
+2. **Vertex AI API:** To power Gemini 2.5 Pro and Gemini 3 Pro.
+3. **Speech-to-Text V2 API:** For the Chirp 3 model.
+4. **Text-to-Speech API:** For the Gemini 2.5 Pro TTS engine.
+5. **Cloud Translation API:** For text-to-text translation.
+6. **Cloud Storage:** For session artifact and debug storage.
+
+---
+
+## 🔐 Required IAM Roles
+
+The Service Account associated with the Cloud Run instance requires the following permissions:
+
+| Role | Purpose |
+| :--- | :--- |
+| `roles/speech.admin` | Full access to Chirp 3 and Recognizers. |
+| `roles/aiplatform.user` | To call Gemini 2.5 Pro Multimodal and Analysis. |
+| `roles/texttospeech.user` | To call the Gemini 2.5 Pro TTS model. |
+| `roles/cloudtranslate.user` | To perform text translations. |
+| `roles/storage.objectAdmin` | To read/write video files and debug audio in GCS. |
+
+---
+
+## 📐 Architecture Diagrams
+
+### High-Level User Flow
+
+```mermaid
+graph TD
+    User((User)) -->|Uploads Video/Image| Agent[ADK Media Agent]
+    Agent -->|Stores Artifact| GCS[(Cloud Storage)]
+    User -->|'Translate this'| Agent
+    Agent -->|Routes Request| Logic{FileType?}
+    Logic -->|Image| Gemini3[Gemini 3 Pro Image]
+    Logic -->|Video| CloudRun[Video Translator Service]
+    Gemini3 -->|Saves Result| GCS
+    CloudRun -->|Saves Result| GCS
+    GCS -->|Trigger Refresh| Agent
+    Agent -->|Displays| User
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/google-cloud-ce/communities/genai-fsa/northam/expert_requests/spinmaster.git
-git branch -M main
-git push -uf origin main
+
+### Video Translator Internal Pipeline
+
+```mermaid
+graph LR
+    Input[Input Video] --> Demucs[Demucs: Split Audio]
+    Demucs --> BG[Background Stem]
+    Demucs --> Vox[Discard English Vocals]
+    
+    Input --> Chirp3[Chirp 3: Get Timestamps]
+    Chirp3 --> Director[Gemini 2.5: Get Director Notes]
+    
+    Director --> TTS[Gemini 2.5 TTS: Generate Spanish]
+    TTS --> Sync[FFmpeg: Time-Stretch to Sync]
+    
+    Sync --> Mix[Mix: Spanish + Background]
+    Mix --> Final[Final Mux: Video + Mix]
+    Final --> Result[Translated Ad]
 ```
 
-## Integrate with your tools
+---
 
-* [Set up project integrations](https://gitlab.com/google-cloud-ce/communities/genai-fsa/northam/expert_requests/spinmaster/-/settings/integrations)
+## 🚀 Deployment
 
-## Collaborate with your team
+1. **Deploy the Service:** Run `./deploy.sh` in the video service directory. This allocates 24Gi RAM and 8 CPUs.
+2. **Run the Agent:**
+3.  
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+```bash
+    export VIDEO_SERVICE_URL="https://your-service-url.a.run.app"
+    adk web run agent.py --artifact_service_uri='gs://your-project-storage'
+```
 
-## Test and Deploy
+---
 
-Use the built-in continuous integration in GitLab.
+### 💡 Why FFmpeg & Demucs?
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+* **Demucs** is critical because standard "ducking" often leaves the original narrator's voice audible in the background. Demucs uses deep learning to "unbake" the audio, allowing us to delete the English speaker entirely while leaving the music untouched.
+* **FFmpeg** is the orchestration engine for the audio. It handles the `adelay` (offsetting speech), `atempo` (matching speech duration), and the final `map` (swapping audio tracks) with mathematical precision.
 
-***
+---
 
-# Editing this README
+## 🚀 Getting Started (Using `uv`)
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+This project uses [**uv**](https://docs.astral.sh/uv/), the extremely fast Python package manager. Follow these steps to clone and run the project in your local environment.
 
-## Suggestions for a good README
+### 1. Install `uv`
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+If you don't have `uv` installed, run:
 
-## Name
-Choose a self-explaining name for your project.
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+### 2. Clone the Project
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+```bash
+git clone <your-repo-url>
+cd video-translator-project
+```
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+### 3. Synchronize the Environment
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+`uv` will automatically detect the `pyproject.toml` file, create a virtual environment, and install all dependencies (including the heavy **Torch** and **Demucs** libraries) with high speed.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```bash
+uv sync
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+### 4. Set Environment Variables
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+Create a `.env` file or export the following:
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+```bash
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export BUCKET_NAME="your-gcs-bucket-name"
+export VIDEO_SERVICE_URL="https://your-cloud-run-url.a.run.app"
+```
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+### 5. Run the Agent
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+To start the ADK Web UI and point it to your storage bucket:
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+```bash
+uv run adk web run agent.py --artifact_service_uri="gs://${BUCKET_NAME}"
+```
 
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+---
