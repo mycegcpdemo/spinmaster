@@ -20,9 +20,10 @@ from google import genai
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT") # This assignment happens locally when pickling the agent before upload to AE
-LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION") # This assignment happens locally when pickling the agent before upload to AE
-STAGING_BUCKET = "gs://adk_demo_staging"
+PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
+LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+STAGING_BUCKET = os.getenv("STAGING_BUCKET", "gs://adk_demo_staging")
+GCS_ARTIFACTS_BUCKET = os.getenv("GCS_ARTIFACTS_BUCKET", "gcs_artifact_svc_bucket")
 
 vertexai.init(project=PROJECT_ID, location=LOCATION, staging_bucket=STAGING_BUCKET)
 
@@ -328,16 +329,18 @@ app = agent_engines.AdkApp(
 # This method serializes the 'app' object and creates a Reasoning Engine resource
 print("Deploying agent to Vertex AI Agent Engine...")
 
-remote_agent = agent_engines.update( # Use agent_engines.create(...) for new deployments
-    resource_name="projects/genai-414119/locations/us-central1/reasoningEngines/6934068981057716224", # Delete this line for new deployments
-    agent_engine=app,  # Your AdkApp object
-    display_name="image agent",
-    description=(
-    "A specialized multimodal agent for high-fidelity image management. "
-    "Capable of visual synchronization, style-preserving image-to-image translation "
-    "via Gemini 3 Pro, and high-performance cloud storage rendering."
+RESOURCE_NAME = os.getenv("IMAGE_AGENT_RESOURCE_NAME")
+SERVICE_ACCOUNT = os.getenv("SERVICE_ACCOUNT")
+
+deployment_config = {
+    "agent_engine": app,
+    "display_name": "image agent",
+    "description": (
+        "A specialized multimodal agent for high-fidelity image management. "
+        "Capable of visual synchronization, style-preserving image-to-image translation "
+        "via Gemini 3 Pro, and high-performance cloud storage rendering."
     ),
-    requirements=[
+    "requirements": [
         "cloudpickle==3.0",
         "pydantic==2.12.5",
         "google-adk>=1.22.1",
@@ -347,14 +350,24 @@ remote_agent = agent_engines.update( # Use agent_engines.create(...) for new dep
         "google-genai>=1.60.0",
         "opentelemetry-instrumentation-google-genai"
     ],
-    env_vars={
-        "GCS_ARTIFACTS_BUCKET": "gcs_artifact_svc_bucket",
+    "env_vars": {
+        "GCS_ARTIFACTS_BUCKET": GCS_ARTIFACTS_BUCKET,
         "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "True",
         "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "True",
     },
-    gcs_dir_name="agent_pickles",
-    min_instances=2,
-    max_instances=10,
-)
+    "gcs_dir_name": "agent_pickles",
+    "min_instances": 2,
+    "max_instances": 10,
+}
+
+if SERVICE_ACCOUNT:
+    deployment_config["service_account"] = SERVICE_ACCOUNT
+
+if RESOURCE_NAME:
+    print(f"Updating existing reasoning engine: {RESOURCE_NAME}")
+    remote_agent = agent_engines.update(resource_name=RESOURCE_NAME, **deployment_config)
+else:
+    print("Creating new reasoning engine...")
+    remote_agent = agent_engines.create(**deployment_config)
 
 print(f"Deployment complete! Resource Name: {remote_agent.resource_name}")

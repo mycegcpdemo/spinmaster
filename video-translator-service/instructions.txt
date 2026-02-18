@@ -1,9 +1,3 @@
-28th Jan 2026
-
-
------------------------------------------------
-
-
 Instructions to Deploy
 
 Make sure you are logged in:
@@ -18,14 +12,14 @@ Run the script:
 
 After the script finishes, it will print your Service URL. You can then point your ADK Agent Tool (the translate_video_artifact function we discussed earlier) to this URL.
 
-Service URL: https://video-translator-678666522283.us-central1.run.app
+Service URL: 
 ------------------------------------------------
 Deployment Complete!
-Service URL: https://video-translator-loze6ekkua-uc.a.run.app
-Bucket Used: genai-414119-translation-artifacts-1769566056
-https://video-translator-678666522283.us-central1.run.app
+Service URL: https://example.run.app
+Bucket Used: bucket-example
+https://example.run.app
 
-export VIDEO_SERVICE_URL="https://video-translator-678666522283.us-central1.run.app"
+export VIDEO_SERVICE_URL="https://example.run.app"
 Use the export variable to ensure subprocess and child process in the terminal can see the variable
 To test it use echo $VIDEO_SERVICE_URL
 

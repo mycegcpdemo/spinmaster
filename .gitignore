@@ -10,5 +10,4 @@ wheels/
 .venv
 
 # Files and folder not needed
-
 .env

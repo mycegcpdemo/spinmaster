@@ -1,95 +1,91 @@
-# 🎬 AI Media Producer: Expressive Video & Image Translator
+# 🎬 SpinMaster: AI Media Producer
+## Expressive Video & Image Translator (2026)
 
-Welcome to the **AI Media Producer** project. This is a state-of-the-art multimodal translation system designed for 2026. It can translate product images while preserving aesthetics and perform high-fidelity video dubbing that captures the original speaker's emotional "soul" while keeping the original background music and sound effects.
+Welcome to the **SpinMaster** project. This is a state-of-the-art multimodal translation system designed for high-fidelity media localization. It features two specialized AI agents and a heavy-duty backend service to perform:
+
+1.  **Style-Preserving Image Translation:** Translates text on product images while keeping the original background, fonts, and lighting intact.
+2.  **Emotional Video Dubbing:** Translates video dialogue while preserving the speaker's emotional tone ("soul"), background music, and sound effects.
 
 ---
-
-## Workflow
-
-### Image workflow
-
-  - User uploads image and it is immediately intercepted by plugin: SaveFilesAsArtifactsPlugin
-  - User asks to list files
-  - User then asks to rename the file they just uploaded to a name they choose
-  - User then asks to translate the renamed image to a certain language
-  - The agent saves the new image using preformatted naming convention and return it to the user
 
 ## 🧩 Project Components
 
-### 1. The Media Agent (`agent.py`)
+### 1. The Image Agent (`image_Agent/agent.py`)
+A specialized multimodal agent built with the **Google ADK (Agent Development Kit)**.
+*   **Role:** Manages high-resolution image assets.
+*   **Key Features:**
+    *   **Visual Sync:** Intercepts uploads to display them immediately in the chat.
+    *   **Persistence:** Saves session images to a permanent Google Cloud Storage (GCS) gallery.
+    *   **Translation:** Uses **Gemini 3 Pro** (`gemini-3-pro-image-preview`) for pixel-perfect text replacement on images.
 
-The "Brain" of the operation. Built using the **Google ADK (Agent Development Kit)**, this agent interacts with the user via a web interface.
+### 2. The Video Agent (`video_agent/agent.py`)
+A robust orchestration agent for video workflows.
+*   **Role:** Manages video uploads and coordinates the translation process.
+*   **Key Features:**
+    *   **Large File Handling:** Intercepts video uploads and streams them to GCS.
+    *   **Service Orchestration:** Sends video assets to the backend *Video Translator Service* for processing.
+    *   **Discovery:** Lists and plays back videos from the cloud library.
 
-* **File Management:** Saves uploads and lists session artifacts in Google Cloud Storage (GCS).
-* **Routing:** Detects user intent. It routes image translation tasks directly to the Gemini 3 Pro model and video translation tasks to the dedicated Cloud Run service.
-* **UI Synchronization:** Triggers automatic display updates so the user sees translated media immediately in the UI.
+### 3. The Video Translator Service (`video-translator-service/`)
+The "Engine Room." A high-performance FastAPI service deployed on **Cloud Run (Gen 2)** with **24GiB of RAM**. It executes a 5-Phase pipeline to perform "Emotional Dubbing."
 
-### 2. The Video Tool (`vid_to_bytes.py`)
-
-The "Bridge." This is an asynchronous Python tool used by the agent to stream large video files as raw bytes to the Cloud Run service. It handles the high-timeout HTTP requests required for complex AI audio processing.
-
-### 3. The Video Translator Service (`main.py` on Cloud Run)
-
-The "Engine Room." A high-performance FastAPI service deployed on **Cloud Run (Gen 2)** with **24GiB of RAM**. It orchestrates a 5-Phase pipeline to perform "Emotional Dubbing."
-
----
-
-## ⚙️ How the Video Translator Service Works
-
-The service follows a sophisticated pipeline to ensure the translated audio is perfectly synced and emotionally identical to the source.
-
-### Phase 1: The "Ears" (Chirp 3 STT)
-
-The service uses **Chirp 3**, Google’s most advanced Speech-to-Text model. It transcribes the English audio and, most importantly, provides **word-level timestamps**. This tells the service exactly which millisecond every word starts and ends.
-
-### Phase 2: The "Director" (Gemini 2.5 Pro Multimodal)
-
-The video is sent to **Gemini 2.5 Pro**. The model "watches" the video and "listens" to the English narrator. It generates a **Director’s Note** for every segment (e.g., *"Speak with high-pitched excitement and a vocal smile"*).
-
-### Phase 3: The "Voice" (Gemini 2.5 Pro TTS)
-
-The English text is sent to **Gemini 2.5 Pro TTS**. Using the Director's Note from Phase 2, the model generates a Spanish (or other language) version.
-
-* **Time-Alignment:** If the Spanish translation is longer than the English original, the service applies an **FFmpeg `atempo` filter** to speed up the voice without changing the pitch, ensuring it fits the video perfectly.
-
-### Phase 4: Stem Separation (Demucs)
-
-To keep the background noise (music, crowds, car engines), the service uses **Demucs (AI Source Separation)**.
-
-* It splits the original audio into two "Stems": **Vocals** and **No Vocals**.
-* The original English **Vocals** are discarded.
-* The original **No Vocals** (Background) is kept.
-
-### Phase 5: Production (FFmpeg Muxing)
-
-The service uses **FFmpeg** to mix the new Spanish voice stem with the original background stem. It then performs a **Hard Swap**, mapping the original video pixels to the new audio mix, resulting in a clean, professional Ad with zero English bleed-through.
+#### ⚙️ The 5-Phase Pipeline
+1.  **The "Ears" (Chirp 3 STT):** Transcribes audio with word-level timestamps to know exactly when every word is spoken.
+2.  **The "Director" (Gemini 2.5 Pro):** Watches the video and listens to the audio to generate "Director's Notes" (e.g., *"Speak with high-pitched excitement"*).
+3.  **The "Voice" (Gemini 2.5 Pro TTS):** Generates the translated speech using the Director's Notes.
+    *   *Time-Stretching:* Uses FFmpeg `atempo` to ensure the new speech fits the original video's timing perfectly.
+4.  **Stem Separation (Demucs):** Uses AI to split the audio into "Vocals" and "Background." The original English vocals are discarded, but the background music/SFX are kept.
+5.  **Production (FFmpeg Muxing):** Mixes the new translated voice with the original background track and remuxes it with the video for a seamless result.
 
 ---
 
-## 🛠 Required Google Cloud Services & APIs
+## 🚀 Deployment
 
-You must enable the following APIs in your Google Cloud Project:
+### A. Full Cloud Deployment (Recommended)
+The project includes a master script to deploy all components (Cloud Run Service + Both Agents) and register them with **Gemini Enterprise**.
 
-1. **Cloud Run:** To host the heavy-duty processing service.
-2. **Vertex AI API:** To power Gemini 2.5 Pro and Gemini 3 Pro.
-3. **Speech-to-Text V2 API:** For the Chirp 3 model.
-4. **Text-to-Speech API:** For the Gemini 2.5 Pro TTS engine.
-5. **Cloud Translation API:** For text-to-text translation.
-6. **Cloud Storage:** For session artifact and debug storage.
+**Prerequisites:**
+*   A Google Cloud Project with billing enabled.
+*   `gcloud` CLI installed and authenticated.
+*   **OAuth Credentials:** Place your `credentials.json` (Web Application type) in the `add_agent_scripts/` directory.
 
----
+**Steps:**
+1.  Run the deployment script:
+    ```bash
+    ./deploy_all.sh
+    ```
+2.  Follow the prompts to enter your Project ID and Gemini App ID.
+3.  The script will:
+    *   Enable all necessary APIs (Vertex AI, Cloud Run, Speech, etc.).
+    *   Create Service Accounts and assign IAM roles.
+    *   Deploy the Video Translator Service to Cloud Run.
+    *   Deploy the Image and Video Agents to Vertex AI Reasoning Engine.
+    *   Register both agents with your Gemini Enterprise app.
 
-## 🔐 Required IAM Roles
+### B. Local Development (Testing Agents)
+You can run the agents locally using `uv` (a fast Python package manager).
 
-The Service Account associated with the Cloud Run instance requires the following permissions:
+1.  **Install `uv`:**
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```
+2.  **Run an Agent:**
+    ```bash
+    # For Image Agent
+    export GOOGLE_CLOUD_PROJECT="your-project-id"
+    export GCS_ARTIFACTS_BUCKET="your-bucket-name"
+    uv run adk web run image_Agent/agent.py
 
-| Role | Purpose |
-| :--- | :--- |
-| `roles/speech.admin` | Full access to Chirp 3 and Recognizers. |
-| `roles/aiplatform.user` | To call Gemini 2.5 Pro Multimodal and Analysis. |
-| `roles/texttospeech.user` | To call the Gemini 2.5 Pro TTS model. |
-| `roles/cloudtranslate.user` | To perform text translations. |
-| `roles/storage.objectAdmin` | To read/write video files and debug audio in GCS. |
+    # For Video Agent
+    export VIDEO_SERVICE_URL="https://your-cloud-run-url.a.run.app"
+    uv run adk web run video_agent/agent.py
+    ```
+
+### C. Clean Up (Rollback)
+To delete all deployed resources (Cloud Run service, Agents, Service Accounts):
+```bash
+./rollback_all.sh
+```
 
 ---
 
@@ -99,102 +95,90 @@ The Service Account associated with the Cloud Run instance requires the followin
 
 ```mermaid
 graph TD
-    User((User)) -->|Uploads Video/Image| Agent[ADK Media Agent]
-    Agent -->|Stores Artifact| GCS[(Cloud Storage)]
-    User -->|'Translate this'| Agent
-    Agent -->|Routes Request| Logic{FileType?}
-    Logic -->|Image| Gemini3[Gemini 3 Pro Image]
-    Logic -->|Video| CloudRun[Video Translator Service]
-    Gemini3 -->|Saves Result| GCS
-    CloudRun -->|Saves Result| GCS
-    GCS -->|Trigger Refresh| Agent
-    Agent -->|Displays| User
+    User((User)) -->|Uploads File| Interceptor[Interceptor]
+    Interceptor -->|Saves to Session| GCS_Session[(GCS Session Artifacts)]
+    
+    subgraph "Image Workflow"
+    User -->|'Translate Image'| ImageAgent[Image Agent]
+    ImageAgent -->|Reads| GCS_Session
+    ImageAgent -->|Gemini 3 Pro| Gemini3[Gemini 3 Pro]
+    Gemini3 -->|Saves Result| GCS_Perm[(GCS Permanent Storage)]
+    end
+
+    subgraph "Video Workflow"
+    User -->|'Translate Video'| VideoAgent[Video Agent]
+    VideoAgent -->|Reads| GCS_Session
+    VideoAgent -->|Calls Service| CloudRun[Video Translator Service]
+    CloudRun -->|Processing Pipeline| CloudRun
+    CloudRun -->|Saves Result| GCS_Perm
+    end
+
+    GCS_Perm -->|Render Tool| ImageAgent
+    GCS_Perm -->|Playback Tool| VideoAgent
+    ImageAgent -->|Displays| User
+    VideoAgent -->|Displays| User
 ```
 
-### Video Translator Internal Pipeline
+### Video Translator Service Pipeline (Internal)
+
+```mermaid
+graph TD
+    Input[Input Video] -->|Parallel Process| AudioProc[Audio Processing]
+    Input -->|Parallel Process| VisionProc[Vision & Context]
+
+    subgraph "Audio Processing (The Ears)"
+    AudioProc -->|Demucs| Split{Split Stems}
+    Split -->|Keep| Background[Background Music/SFX]
+    Split -->|Discard| Vocals[Original Vocals]
+    AudioProc -->|Chirp 3| Transcript[Transcript + Timestamps]
+    end
+
+    subgraph "Vision & Context (The Director)"
+    VisionProc -->|Gemini 2.5 Pro| Director[Director's Notes]
+    Transcript --> Director
+    Director -->|Style Instructions| TTS_Gen
+    end
+
+    subgraph "Synthesis (The Voice)"
+    TTS_Gen[Gemini 2.5 Pro TTS] -->|Generate Audio| RawAudio
+    RawAudio -->|FFmpeg atempo| TimeSync[Time-Stretched Audio]
+    end
+
+    subgraph "Production (The Mix)"
+    TimeSync -->|Mix| FinalMix[Final Mix]
+    Background -->|Mix| FinalMix
+    FinalMix -->|Remux| OutputVideo[Final Translated Video]
+    Input -->|Video Stream| OutputVideo
+    end
+```
+
+### Agent Architecture (Common Pattern)
 
 ```mermaid
 graph LR
-    Input[Input Video] --> Demucs[Demucs: Split Audio]
-    Demucs --> BG[Background Stem]
-    Demucs --> Vox[Discard English Vocals]
+    UserMsg[User Message] --> Interceptor{Interceptor Callback}
+    Interceptor -->|Contains File?| SaveArtifact[Save to Session GCS]
+    Interceptor -->|No File| Model[Gemini Model]
+    SaveArtifact --> Model
     
-    Input --> Chirp3[Chirp 3: Get Timestamps]
-    Chirp3 --> Director[Gemini 2.5: Get Director Notes]
+    Model -->|Decides Tool| Tools{Tools}
+    Tools -->|Save/Rename| GCSPerm[Permanent GCS]
+    Tools -->|List/Search| GCSPerm
+    Tools -->|Translate| ExtService[External Service/Model]
     
-    Director --> TTS[Gemini 2.5 TTS: Generate Spanish]
-    TTS --> Sync[FFmpeg: Time-Stretch to Sync]
-    
-    Sync --> Mix[Mix: Spanish + Background]
-    Mix --> Final[Final Mux: Video + Mix]
-    Final --> Result[Translated Ad]
+    GCSPerm -->|Load Artifact| Session[Session Context]
+    Session -->|Context| Model
+    Model -->|Response| UserResponse[User Response]
 ```
 
 ---
 
-## 🚀 Deployment
+## 🛠 Required Google Cloud Services
 
-1. **Deploy the Service:** Run `./deploy.sh` in the video service directory. This allocates 24Gi RAM and 8 CPUs.
-2. **Run the Agent:**
-3.  
-
-```bash
-    export VIDEO_SERVICE_URL="https://your-service-url.a.run.app"
-    adk web run agent.py --artifact_service_uri='gs://your-project-storage'
-```
-
----
-
-### 💡 Why FFmpeg & Demucs?
-
-* **Demucs** is critical because standard "ducking" often leaves the original narrator's voice audible in the background. Demucs uses deep learning to "unbake" the audio, allowing us to delete the English speaker entirely while leaving the music untouched.
-* **FFmpeg** is the orchestration engine for the audio. It handles the `adelay` (offsetting speech), `atempo` (matching speech duration), and the final `map` (swapping audio tracks) with mathematical precision.
-
----
-
-## 🚀 Getting Started (Using `uv`)
-
-This project uses [**uv**](https://docs.astral.sh/uv/), the extremely fast Python package manager. Follow these steps to clone and run the project in your local environment.
-
-### 1. Install `uv`
-
-If you don't have `uv` installed, run:
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-### 2. Clone the Project
-
-```bash
-git clone <your-repo-url>
-cd video-translator-project
-```
-
-### 3. Synchronize the Environment
-
-`uv` will automatically detect the `pyproject.toml` file, create a virtual environment, and install all dependencies (including the heavy **Torch** and **Demucs** libraries) with high speed.
-
-```bash
-uv sync
-```
-
-### 4. Set Environment Variables
-
-Create a `.env` file or export the following:
-
-```bash
-export GOOGLE_CLOUD_PROJECT="your-project-id"
-export BUCKET_NAME="your-gcs-bucket-name"
-export VIDEO_SERVICE_URL="https://your-cloud-run-url.a.run.app"
-```
-
-### 5. Run the Agent
-
-To start the ADK Web UI and point it to your storage bucket:
-
-```bash
-uv run adk web run agent.py --artifact_service_uri="gs://${BUCKET_NAME}"
-```
-
----
+*   **Cloud Run:** Hosting the video processing service.
+*   **Vertex AI (Reasoning Engine):** Hosting the agents.
+*   **Vertex AI (Gemini):** Powering the LLM logic (Gemini 2.5 Pro, Gemini 3 Pro).
+*   **Speech-to-Text V2:** For Chirp 3 transcription.
+*   **Text-to-Speech:** For Gemini 2.5 Pro TTS.
+*   **Cloud Storage:** For storing media assets.
+*   **Discovery Engine:** For registering agents with Gemini Enterprise.

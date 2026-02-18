@@ -19,8 +19,9 @@ import vertexai
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", force=True)
 
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
-LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION")
-STAGING_BUCKET = "gs://adk_demo_staging"
+LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+STAGING_BUCKET = os.getenv("STAGING_BUCKET", "gs://adk_demo_staging")
+GCS_ARTIFACTS_BUCKET = os.getenv("GCS_ARTIFACTS_BUCKET", "gcs_artifact_svc_bucket")
 
 vertexai.init(project=PROJECT_ID, location=LOCATION, staging_bucket=STAGING_BUCKET)
 
@@ -61,7 +62,7 @@ async def save_video_to_permanent_storage_tool(
     Step 2: Persist a video from the temporary session memory to the 
     permanent 'videos/' folder in GCS.
     """
-    bucket_name = "gcs_artifact_svc_bucket"
+    bucket_name = GCS_ARTIFACTS_BUCKET
     final_name = final_name or video_name_in_session
     
     try:
@@ -88,7 +89,7 @@ async def save_video_to_permanent_storage_tool(
 # --- 3. Discovery Tool: Search Permanent Bucket ---
 def get_all_videos_with_urls():
     """Lists blobs in 'videos/' and returns browser-authenticated URLs."""
-    bucket_name = "gcs_artifact_svc_bucket"
+    bucket_name = GCS_ARTIFACTS_BUCKET
     prefix = "videos/"
     try:
         storage_client = storage.Client()
@@ -109,8 +110,9 @@ async def translate_video_tool(
     tool_context: ToolContext
 ) -> str:
     """Uses Cloud Run Sidecar for emotion-aware video translation."""
-    bucket_name = "gcs_artifact_svc_bucket"
-    cloud_run_url = "https://video-translator-678666522283.us-central1.run.app/translate-raw"
+    bucket_name = GCS_ARTIFACTS_BUCKET
+    service_url = os.getenv('VIDEO_SERVICE_URL')
+    cloud_run_url = f"{service_url}/translate-raw"
     
     try:
         storage_client = storage.Client()
@@ -119,10 +121,24 @@ async def translate_video_tool(
 
         video_bytes = blob.download_as_bytes()
         
+        # --- Authentication ---
+        # Get ID token for Cloud Run service
+        import google.auth
+        import google.auth.transport.requests
+        from google.oauth2 import id_token
+
+        auth_req = google.auth.transport.requests.Request()
+        # The target audience is the base service URL (without /translate-raw)
+        target_audience = service_url
+        token = id_token.fetch_id_token(auth_req, target_audience)
+        
+        headers = {"Authorization": f"Bearer {token}"}
+
         response = requests.post(
             cloud_run_url,
             data={"target_language": target_language},
             files={"file": (video_filename, video_bytes, "video/mp4")},
+            headers=headers,
             timeout=600
         )
         response.raise_for_status()
@@ -165,18 +181,21 @@ root_agent = LlmAgent(
 
 app = agent_engines.AdkApp(
     agent=root_agent,
-    artifact_service_builder=lambda: GcsArtifactService(bucket_name="gcs_artifact_svc_bucket"),
+    artifact_service_builder=lambda: GcsArtifactService(bucket_name=GCS_ARTIFACTS_BUCKET),
     session_service_builder=lambda: VertexAiSessionService(project=PROJECT_ID, location=LOCATION),
 )
 
 # Deployment logic remains unchanged...
 print("Deploying Fully-Instrumented Video Agent to Vertex AI...")
 
-remote_agent = agent_engines.update(
-    resource_name="projects/678666522283/locations/us-central1/reasoningEngines/1341900065630846976",
-    agent_engine=app,
-    display_name="callback_video_agent_v1",
-    requirements=[
+RESOURCE_NAME = os.getenv("VIDEO_AGENT_RESOURCE_NAME")
+VIDEO_SERVICE_URL = os.getenv("VIDEO_SERVICE_URL")
+SERVICE_ACCOUNT = os.getenv("SERVICE_ACCOUNT")
+
+deployment_config = {
+    "agent_engine": app,
+    "display_name": "callback_video_agent_v1",
+    "requirements": [
         "cloudpickle==3.0",
         "pydantic==2.12.5",
         "google-adk>=1.22.1",
@@ -185,13 +204,24 @@ remote_agent = agent_engines.update(
         "google-cloud-logging>=3.11.0",
         "google-genai>=1.60.0",
         "requests>=2.32.5",
+        "google-auth>=2.23.0",
     ],
-    env_vars={
-        "GCS_ARTIFACTS_BUCKET": "gcs_artifact_svc_bucket",
-        "VIDEO_SERVICE_URL": "https://video-translator-678666522283.us-central1.run.app",
+    "env_vars": {
+        "GCS_ARTIFACTS_BUCKET": GCS_ARTIFACTS_BUCKET,
+        "VIDEO_SERVICE_URL": VIDEO_SERVICE_URL,
     },
-    min_instances=2,
-    max_instances=10,
-)
+    "min_instances": 2,
+    "max_instances": 10,
+}
+
+if SERVICE_ACCOUNT:
+    deployment_config["service_account"] = SERVICE_ACCOUNT
+
+if RESOURCE_NAME:
+    print(f"Updating existing reasoning engine: {RESOURCE_NAME}")
+    remote_agent = agent_engines.update(resource_name=RESOURCE_NAME, **deployment_config)
+else:
+    print("Creating new reasoning engine...")
+    remote_agent = agent_engines.create(**deployment_config)
 
 print(f"Update complete! Resource: {remote_agent.resource_name}")
