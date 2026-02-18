@@ -11,3 +11,4 @@ wheels/
 
 # Files and folder not needed
 .env
+credentials.json
