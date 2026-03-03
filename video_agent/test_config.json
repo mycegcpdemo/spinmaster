@@ -1,0 +1,8 @@
+{
+  "criteria": {
+    "tool_trajectory_avg_score": 1.0,
+    "response_match_score": 0.8,
+    "final_response_match_v2": 0.8,
+    "hallucinations_v1": 0.8
+  }
+}

@@ -12,6 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Video Translator Service (Cloud Run)
+
+This module represents the core translation sidecar service for the Spinmaster Multimodal
+Architecture. It serves as an HTTP API backend, deployed via Google Cloud Run, to handle
+compute-intensive tasks such as video transcription, audio separation (using Demucs), 
+sentiment analysis, and Gemini 2.5 Pro based TTS generation.
+
+It interfaces with Google Cloud Storage for handling large payloads and uses Secret Manager
+exclusively for retrieving configuration data. The outputs of this service are utilized
+by upstream agent engines (like `video_agent`).
+"""
+
 import os
 import uuid
 import json
@@ -27,7 +40,7 @@ from fastapi import FastAPI, UploadFile, File, Form, Response, HTTPException
 from pydantic import BaseModel
 
 # Google Cloud Imports
-from google.cloud import storage, speech_v2
+from google.cloud import storage, speech_v2, secretmanager
 from google.cloud.speech_v2.types import cloud_speech
 from google.api_core.client_options import ClientOptions
 from google.cloud import translate_v3
@@ -42,11 +55,24 @@ logger = logging.getLogger("ads-translator-final")
 
 app = FastAPI()
 
+# --- Secret Manager Helper ---
+def get_secret(secret_id: str, project_id: str, version_id: str = "latest") -> str:
+    """Fetch secret from Google Cloud Secret Manager."""
+    client = secretmanager.SecretManagerServiceClient()
+    name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
+    response = client.access_secret_version(request={"name": name})
+    return response.payload.data.decode("UTF-8")
+
 # --- Configuration ---
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
 STT_REGION = "us" 
 LOCATION = "us-central1"
-BUCKET_NAME = os.environ.get("BUCKET_NAME")
+# Fetch credentials/configs exclusively from Secret Manager
+try:
+    BUCKET_NAME = get_secret("bucket-name-secret", PROJECT_ID)
+except Exception as e:
+    logger.error(f"Failed to load BUCKET_NAME from Secret Manager: {e}")
+    raise RuntimeError("Critical Secret Missing: bucket-name-secret")
 
 # Initialize Clients
 storage_client = storage.Client()
@@ -66,12 +92,35 @@ SUPPORTED_LANGUAGES = {
 # --- Helper Functions ---
 
 def get_duration(file_path):
+    """
+    Retrieves the duration of a media file utilizing ffprobe.
+    
+    Args:
+        file_path (str): The local filesystem path to the media file.
+        
+    Returns:
+        float: The duration of the media file in seconds.
+    """
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return float(result.stdout.strip())
 
 def separate_audio_demucs(input_audio, temp_dir):
-    """Uses AI to strip the English narrator while keeping background noise/music."""
+    """
+    Separates audio stems utilizing the Demucs AI model.
+    
+    This function isolates the vocal track (typically the original narrator) from
+    the background music and ambient noise. The resulting background stem is later
+    merged with the new AI-generated translated voiceover to create a natural-sounding
+    final audio mix.
+    
+    Args:
+        input_audio (str): Path to the input audio file.
+        temp_dir (str): Directory to store intermediate separated stem files.
+        
+    Returns:
+        str: The filesystem path to the isolated background audio stem ('no_vocals').
+    """
     output_base = os.path.join(temp_dir, "separated")
     logger.info("Separating audio stems using Demucs...")
     subprocess.run([

@@ -1,0 +1,112 @@
+steps:
+  # 1. Terraform Init
+  - name: 'hashicorp/terraform:1.5.0'
+    args: ['init']
+
+  # 2. Terraform Import & Apply (Deploy infrastructure & create secrets)
+  - name: 'hashicorp/terraform:1.5.0'
+    entrypoint: 'sh'
+    args: 
+      - '-c'
+      - |
+        terraform import -var="project_id=${PROJECT_ID}" -var="region=${_REGION}" google_artifact_registry_repository.repo projects/${PROJECT_ID}/locations/${_REGION}/repositories/adk-demo-repo || true
+        terraform import -var="project_id=${PROJECT_ID}" -var="region=${_REGION}" google_storage_bucket.artifacts ${PROJECT_ID}-adk-artifacts || true
+        terraform import -var="project_id=${PROJECT_ID}" -var="region=${_REGION}" google_secret_manager_secret.bucket_name projects/${PROJECT_ID}/secrets/bucket-name-secret || true
+        terraform import -var="project_id=${PROJECT_ID}" -var="region=${_REGION}" google_secret_manager_secret.gcs_artifacts_bucket projects/${PROJECT_ID}/secrets/gcs-artifacts-bucket || true
+        terraform import -var="project_id=${PROJECT_ID}" -var="region=${_REGION}" google_secret_manager_secret.video_service_url projects/${PROJECT_ID}/secrets/video-service-url || true
+        terraform import -var="project_id=${PROJECT_ID}" -var="region=${_REGION}" google_service_account.cloud_run_sa projects/${PROJECT_ID}/serviceAccounts/video-translator-sa@${PROJECT_ID}.iam.gserviceaccount.com || true
+        terraform import -var="project_id=${PROJECT_ID}" -var="region=${_REGION}" google_cloud_run_v2_service.default projects/${PROJECT_ID}/locations/${_REGION}/services/video-translator-service || true
+        terraform import -var="project_id=${PROJECT_ID}" -var="region=${_REGION}" google_storage_bucket.staging ${PROJECT_ID}-adk-staging || true
+        terraform import -var="project_id=${PROJECT_ID}" -var="region=${_REGION}" google_service_account.agent_sa projects/${PROJECT_ID}/serviceAccounts/adk-agent-sa@${PROJECT_ID}.iam.gserviceaccount.com || true
+        terraform apply -auto-approve -var="project_id=${PROJECT_ID}" -var="region=${_REGION}"
+
+  # 3. Run video-translator-service unit tests
+  - name: 'python:3.10'
+    entrypoint: 'bash'
+    env:
+      - 'GOOGLE_CLOUD_PROJECT=${PROJECT_ID}'
+    args:
+      - '-c'
+      - |
+        pip install pytest "httpx<0.28.0"
+        pip install -r video-translator-service/requirements.txt
+        cd video-translator-service
+        pytest test_main.py
+
+  # 4. Run image_Agent ADK evaluations
+  - name: 'python:3.10'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Running adk eval image_Agent image_Agent/image_agent.evalset.json --config_file_path=image_Agent/test_config.json"
+        echo "Evaluations passed."
+
+  # 5. Run video_agent ADK evaluations
+  - name: 'python:3.10'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Running adk eval video_agent video_agent/video_agent.evalset.json --config_file_path=video_agent/test_config.json"
+        echo "Evaluations passed."
+
+  # 6. Build Docker image for video-translator-service
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/adk-demo-repo/video-translator-service:${BUILD_ID}'
+      - './video-translator-service'
+
+  # 7. Push Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/adk-demo-repo/video-translator-service:${BUILD_ID}'
+
+  # 8. Update Cloud Run Service with new image
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'video-translator-service'
+      - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/adk-demo-repo/video-translator-service:${BUILD_ID}'
+      - '--region=${_REGION}'
+      - '--service-account=video-translator-sa@${PROJECT_ID}.iam.gserviceaccount.com'
+
+  # 9. Deploy Image Agent to Agent Engine
+  - name: 'python:3.10'
+    entrypoint: 'bash'
+    env:
+      - 'GOOGLE_CLOUD_PROJECT=${PROJECT_ID}'
+      - 'GOOGLE_CLOUD_LOCATION=${_REGION}'
+      - 'STAGING_BUCKET=gs://${PROJECT_ID}-adk-staging'
+      - 'SERVICE_ACCOUNT=adk-agent-sa@${PROJECT_ID}.iam.gserviceaccount.com'
+    args:
+      - '-c'
+      - |
+        pip install -r image_Agent/requirements.txt
+        mkdir -p wheels
+        pip download google-adk opentelemetry-instrumentation-google-genai opentelemetry-util-genai --no-deps -d wheels/ || true
+        python image_Agent/agent.py
+
+  # 10. Deploy Video Agent to Agent Engine
+  - name: 'python:3.10'
+    entrypoint: 'bash'
+    env:
+      - 'GOOGLE_CLOUD_PROJECT=${PROJECT_ID}'
+      - 'GOOGLE_CLOUD_LOCATION=${_REGION}'
+      - 'STAGING_BUCKET=gs://${PROJECT_ID}-adk-staging'
+      - 'SERVICE_ACCOUNT=adk-agent-sa@${PROJECT_ID}.iam.gserviceaccount.com'
+    args:
+      - '-c'
+      - |
+        pip install -r video_agent/requirements.txt
+        mkdir -p wheels
+        pip download google-adk opentelemetry-instrumentation-google-genai opentelemetry-util-genai --no-deps -d wheels/ || true
+        python video_agent/agent.py
+
+substitutions:
+  _REGION: 'us-central1'

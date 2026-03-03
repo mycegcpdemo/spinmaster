@@ -12,12 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Image Agent (Vertex AI Agent Engine)
+
+This module defines the 'image_agent', a specialized multimodal reasoning engine
+built on the Google Agent Development Kit (ADK) and deployed via Vertex AI.
+Its primary architectural purpose is to orchestrate complex image management,
+rendering, and translation tasks between transient user sessions and permanent
+Google Cloud Storage (GCS).
+
+It utilizes Google Secret Manager for secure configuration, leverages Gemini 2.5 Flash
+for intelligent orchestration, and accesses Gemini 3 Pro Vision models for
+high-fidelity, style-preserving image translations.
+"""
+
 import os
 import logging
 import mimetypes
 import textwrap
 import asyncio
-from typing import Optional
+from typing import Optional, Dict, List
 from google.adk.agents import LlmAgent
 from google.adk.tools import ToolContext, FunctionTool, load_artifacts
 from google.adk.models import LlmRequest, LlmResponse
@@ -29,15 +43,42 @@ from google.adk.sessions import VertexAiSessionService
 from vertexai import agent_engines
 import vertexai
 from google import genai
+from google.cloud import secretmanager
 
 # --- Configuration & Logging ---
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+def get_secret(secret_id: str, project_id: str, version_id: str = "latest") -> str:
+    """
+    Fetch a secret payload from Google Cloud Secret Manager.
+    
+    This function securely retrieves sensitive configuration data, adhering to
+    the principle of least privilege and eliminating hardcoded secrets in the
+    codebase. It interacts directly with the Google Cloud Secret Manager API.
+    
+    Args:
+        secret_id (str): The identifier of the secret to retrieve.
+        project_id (str): The Google Cloud project ID hosting the secret.
+        version_id (str, optional): The version of the secret. Defaults to "latest".
+        
+    Returns:
+        str: The decoded secret payload as a UTF-8 string.
+    """
+    client = secretmanager.SecretManagerServiceClient()
+    name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
+    response = client.access_secret_version(request={"name": name})
+    return response.payload.data.decode("UTF-8")
+
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
 LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 STAGING_BUCKET = os.getenv("STAGING_BUCKET", "gs://adk_demo_staging")
-GCS_ARTIFACTS_BUCKET = os.getenv("GCS_ARTIFACTS_BUCKET", "gcs_artifact_svc_bucket")
+
+try:
+    GCS_ARTIFACTS_BUCKET = get_secret("gcs-artifacts-bucket", PROJECT_ID)
+except Exception as e:
+    logger.error(f"Failed to load GCS_ARTIFACTS_BUCKET from Secret Manager: {e}")
+    raise RuntimeError("Critical Secret Missing: gcs-artifacts-bucket")
 
 vertexai.init(project=PROJECT_ID, location=LOCATION, staging_bucket=STAGING_BUCKET)
 
@@ -47,8 +88,20 @@ async def intercept_and_session_save(
     callback_context: CallbackContext, llm_request: LlmRequest
 ) -> Optional[LlmResponse]:
     """
-    Step 1: Intercept user message and save uploaded files to the SESSION artifacts.
-
+    Intercepts the user message and saves uploaded files to the SESSION artifacts.
+    
+    This pre-model callback acts as a multimodal synchronization layer. It parses
+    incoming LLM requests to extract raw byte streams (e.g., images) from inline data
+    and persists them temporarily to the ADK session state. This ensures that the agent
+    engine has immediate contextual awareness of user-provided visual assets before
+    tool execution.
+    
+    Args:
+        callback_context (CallbackContext): The context object for the current invocation.
+        llm_request (LlmRequest): The incoming request containing user messages and parts.
+        
+    Returns:
+        Optional[LlmResponse]: Returns None to allow the model to continue processing.
     """
     if not llm_request.contents or llm_request.contents[-1].role != "user":
         return None
@@ -71,7 +124,7 @@ async def intercept_and_session_save(
 
 # 2 --- Updated Tool: Persistent GCS Save with Renaming Support ---
 async def save_session_to_gcs_tool(
-    tool_context: ToolContext, rename_map: dict[str, str] = None
+    tool_context: ToolContext, rename_map: Dict[str, str] = None
 ) -> str:
     """
     Optimized tool to persist session images to GCS with parallel uploads
@@ -79,7 +132,7 @@ async def save_session_to_gcs_tool(
     """
 
     # 1. Retrieve the list of current session artifacts
-    GCS_BUCKET = os.getenv("GCS_ARTIFACTS_BUCKET")
+    GCS_BUCKET = GCS_ARTIFACTS_BUCKET
 
     artifacts = await tool_context.list_artifacts()
     if not artifacts:
@@ -126,13 +179,13 @@ async def save_session_to_gcs_tool(
 
 
 # --- 3. Tool: List and Search GCS ---
-async def search_and_list_files_tool(tool_context: ToolContext) -> list[str]:
+async def search_and_list_files_tool(tool_context: ToolContext) -> List[str]:
     """
     Step 3: List all files in GCS persistent storage for the user.
 
     """
 
-    GCS_BUCKET = os.getenv("GCS_ARTIFACTS_BUCKET")
+    GCS_BUCKET = GCS_ARTIFACTS_BUCKET
 
     storage_client = storage.Client()
     blobs = storage_client.list_blobs(GCS_BUCKET, prefix="permanent_storage/")
@@ -147,7 +200,7 @@ async def render_from_permanent_storage_tool(
     Optimized tool to retrieve images from 'permanent_storage/' and
     render them as session artifacts.
     """
-    GCS_BUCKET = os.getenv("GCS_ARTIFACTS_BUCKET")
+    GCS_BUCKET = GCS_ARTIFACTS_BUCKET
 
     try:
         bucket_name = GCS_BUCKET
@@ -202,7 +255,7 @@ async def translate_image_tool(
     and saves the output to BOTH session artifacts and permanent storage.
     """
 
-    GCS_BUCKET = os.getenv("GCS_ARTIFACTS_BUCKET")
+    GCS_BUCKET = GCS_ARTIFACTS_BUCKET
 
     client = genai.Client(vertexai=True, project=PROJECT_ID, location="global")
 
@@ -317,15 +370,15 @@ root_agent = LlmAgent(
 # This ensures the cloud runtime can initialize the GCS service
 def artifact_service_builder():
     # Agent Engine automatically sets GCS_ARTIFACTS_BUCKET if you use --staging_bucket
-    bucket = os.getenv("GCS_ARTIFACTS_BUCKET")
+    bucket = GCS_ARTIFACTS_BUCKET
     return GcsArtifactService(bucket_name=bucket)
     # return InMemoryArtifactService()
 
 
 def session_service_builder():
     return VertexAiSessionService(
-        project=os.getenv("GOOGLE_CLOUD_PROJECT"),
-        location=os.getenv("GOOGLE_CLOUD_LOCATION"),
+        project=PROJECT_ID,
+        location=LOCATION,
     )
 
 
@@ -339,49 +392,54 @@ app = agent_engines.AdkApp(
     enable_tracing=True,
 )
 
-# 5. Deploy from an Agent Object
-# This method serializes the 'app' object and creates a Reasoning Engine resource
-print("Deploying agent to Vertex AI Agent Engine...")
+if __name__ == "__main__":
+    # 5. Deploy from an Agent Object
+    # This method serializes the 'app' object and creates a Reasoning Engine resource
+    print("Deploying agent to Vertex AI Agent Engine...")
 
-RESOURCE_NAME = os.getenv("IMAGE_AGENT_RESOURCE_NAME")
-SERVICE_ACCOUNT = os.getenv("SERVICE_ACCOUNT")
+    RESOURCE_NAME = os.getenv("IMAGE_AGENT_RESOURCE_NAME")
+    SERVICE_ACCOUNT = os.getenv("SERVICE_ACCOUNT")
 
-deployment_config = {
-    "agent_engine": app,
-    "display_name": "image agent",
-    "description": (
-        "A specialized multimodal agent for high-fidelity image management. "
-        "Capable of visual synchronization, style-preserving image-to-image translation "
-        "via Gemini 3 Pro, and high-performance cloud storage rendering."
-    ),
-    "requirements": [
-        "cloudpickle==3.0",
-        "pydantic==2.12.5",
-        "google-adk>=1.22.1",
-        "google-auth-oauthlib>=1.2.4",
-        "google-cloud-aiplatform[adk,agent-engines]>=1.135.0",
-        "google-cloud-storage>=3.8.0",
-        "google-genai>=1.60.0",
-        "opentelemetry-instrumentation-google-genai"
-    ],
-    "env_vars": {
-        "GCS_ARTIFACTS_BUCKET": GCS_ARTIFACTS_BUCKET,
-        "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "True",
-        "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "True",
-    },
-    "gcs_dir_name": "agent_pickles",
-    "min_instances": 2,
-    "max_instances": 10,
-}
+    deployment_config = {
+        "agent_engine": app,
+        "display_name": "image agent",
+        "description": (
+            "A specialized multimodal agent for high-fidelity image management. "
+            "Capable of visual synchronization, style-preserving image-to-image translation "
+            "via Gemini 3 Pro, and high-performance cloud storage rendering."
+        ),
+        "requirements": [
+            "cloudpickle>=3.0",
+            "pydantic>=2.6.1",
+            "google-auth-oauthlib>=1.2.4",
+            "google-cloud-aiplatform[adk,agent-engines]>=1.135.0",
+            "google-cloud-storage>=3.8.0",
+            "google-genai>=1.60.0",
+            "google-cloud-secret-manager>=2.21.0"
+        ],
+        "env_vars": {
+            "GCS_ARTIFACTS_BUCKET": GCS_ARTIFACTS_BUCKET,
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "True",
+            "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "True",
+        },
+        "gcs_dir_name": "agent_pickles",
+        "min_instances": 2,
+        "max_instances": 10,
+    }
 
-if SERVICE_ACCOUNT:
-    deployment_config["service_account"] = SERVICE_ACCOUNT
+    import glob
+    local_wheels = glob.glob("wheels/*.whl")
+    if local_wheels:
+        deployment_config["extra_packages"] = local_wheels
 
-if RESOURCE_NAME:
-    print(f"Updating existing reasoning engine: {RESOURCE_NAME}")
-    remote_agent = agent_engines.update(resource_name=RESOURCE_NAME, **deployment_config)
-else:
-    print("Creating new reasoning engine...")
-    remote_agent = agent_engines.create(**deployment_config)
+    if SERVICE_ACCOUNT:
+        deployment_config["service_account"] = SERVICE_ACCOUNT
 
-print(f"Deployment complete! Resource Name: {remote_agent.resource_name}")
+    if RESOURCE_NAME:
+        print(f"Updating existing reasoning engine: {RESOURCE_NAME}")
+        remote_agent = agent_engines.update(resource_name=RESOURCE_NAME, **deployment_config)
+    else:
+        print("Creating new reasoning engine...")
+        remote_agent = agent_engines.create(**deployment_config)
+
+    print(f"Deployment complete! Resource Name: {remote_agent.resource_name}")

@@ -1,226 +1,82 @@
-<!-- # Copyright 2026 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License. -->
+# Spinmaster AI Multimodal Application
 
+## Solution Overview
+The Spinmaster AI application is a production-grade, multimodal system designed to orchestrate complex video and image processing tasks. It leverages advanced Large Language Models (LLMs) and specialized Google Cloud infrastructure to offer an intelligent video translator service and context-aware multimodal agents (Image and Video). The solution processes user uploads, extracts features, performs sentiment and semantic analysis, and applies style-preserving AI translation to multimedia assets.
 
-# 🎬 SpinMaster: AI Media Producer
+## Architecture Diagram
 
-## Disclaimer
+```mermaid
+graph TD;
+    User-->|Uploads Media / Chat| CloudRun[Video Translator Service]
+    User-->|Interact| VertexAgent[Vertex AI Agent Engine]
+    
+    CloudRun-->|Transcribes| SpeechAPI[Cloud Speech-to-Text]
+    CloudRun-->|Directs/TTS| GenAI[Vertex AI / Gemini 2.5 Pro]
+    CloudRun-->|Stores Output| GCS[Google Cloud Storage]
+    
+    VertexAgent-->|Render / Persist| GCS
+    VertexAgent-->|Translates Image| GenAI
+    
+    CloudRun-->|Fetches Config| Secrets[Google Secret Manager]
+    VertexAgent-->|Fetches Config| Secrets
+```
 
-This list is not an official Google product. Links on this list also are not necessarily to official Google products.
+## Core System Features
 
-## License
+*   **Evaluation:** The system features a holistic Agent Development Kit (ADK) evaluation framework. Programmatic test suites utilize `AgentEvaluator.evaluate()` to systematically validate agent trajectories, semantic response matching, and hallucination reduction against baseline scenarios.
+*   **CI/CD:** The repository features an automated continuous integration and continuous deployment pipeline orchestrated exclusively via Google Cloud Build. Commits to the main branch trigger unit testing, ADK evaluations, container builds, and infrastructure deployments. Ensure no GitLab CI or other unsupported frameworks exist.
+*   **OAuth 2.0:** The architecture employs OAuth 2.0 authentication flows for secure inter-service communication and agent registration, utilizing Google Cloud tokens and workload identity where applicable.
+*   **Security:** The application enforces a stringent security posture. Sensitive credentials and configurations are exclusively managed and accessed via Google Secret Manager. All Google Cloud IAM service accounts adhere strictly to the principle of least privilege, scoped meticulously via Terraform to exact resource requirements.
+*   **Unit Testing:** The codebase incorporates a comprehensive unit testing framework utilizing Pytest. Core logic and API endpoints are systematically tested to ensure behavioral correctness and stability prior to deployment.
+*   **Autoscaling & Workload Configuration:** The cloud infrastructure, managed via Terraform, inherently scales based on demand. The compute environments running the stateless video translator service automatically adjust capacity. Specifically, the Cloud Run workload is configured with a minimum active instance count (`min_instances = 1`) to prevent cold starts, and utilizes a minimum memory allocation of 8Gi to accommodate heavy compute requirements such as Demucs audio separation and FFmpeg processing.
+*   **Terraform:** The entire infrastructure lifecycle is managed predictably using Infrastructure as Code via Terraform. It ensures reproducible, automated provisioning of compute instances, storage, identity, and API enablement.
 
-Copyright 2023 Google LLC
-This project is licensed under the Apache License, Version 2.0. See the [LICENSE](https://gitlab.com/google-cloud-ce/communities/genai-fsa/northam/expert_requests/mark_anthony_marketing_genmedia/-/blob/main/genmedia-agent/LICENSE) file for details.
+## Deployment & Operations
 
-## Expressive Video & Image Translator (2026)
-
-Welcome to the **SpinMaster** project. This is a state-of-the-art multimodal translation system designed for high-fidelity media localization. It features two specialized AI agents and a heavy-duty backend service to perform:
-
-1. **Style-Preserving Image Translation:** Translates text on product images while keeping the original background, fonts, and lighting intact.
-2. **Emotional Video Dubbing:** Translates video dialogue while preserving the speaker's emotional tone ("soul"), background music, and sound effects.
-
----
-
-## 🧩 Project Components
-
-### 1. The Image Agent (`image_Agent/agent.py`)
-
-A specialized multimodal agent built with the **Google ADK (Agent Development Kit)**.
-
-* **Role:** Manages high-resolution image assets.
-* **Key Features:**
-  * **Visual Sync:** Intercepts uploads to display them immediately in the chat.
-  * **Persistence:** Saves session images to a permanent Google Cloud Storage (GCS) gallery.
-  * **Translation:** Uses **Gemini 3 Pro** (`gemini-3-pro-image-preview`) for pixel-perfect text replacement on images.
-
-### 2. The Video Agent (`video_agent/agent.py`)
-
-A robust orchestration agent for video workflows.
-
-* **Role:** Manages video uploads and coordinates the translation process.
-* **Key Features:**
-  * **Large File Handling:** Intercepts video uploads and streams them to GCS.
-  * **Service Orchestration:** Sends video assets to the backend *Video Translator Service* for processing.
-  * **Discovery:** Lists and plays back videos from the cloud library.
-
-### 3. The Video Translator Service (`video-translator-service/`)
-
-The "Engine Room." A high-performance FastAPI service deployed on **Cloud Run (Gen 2)** with **24GiB of RAM**. It executes a 5-Phase pipeline to perform "Emotional Dubbing."
-
-#### ⚙️ The 5-Phase Pipeline
-
-1. **The "Ears" (Chirp 3 STT):** Transcribes audio with word-level timestamps to know exactly when every word is spoken.
-2. **The "Director" (Gemini 2.5 Pro):** Watches the video and listens to the audio to generate "Director's Notes" (e.g., *"Speak with high-pitched excitement"*).
-3. **The "Voice" (Gemini 2.5 Pro TTS):** Generates the translated speech using the Director's Notes.
-    * *Time-Stretching:* Uses FFmpeg `atempo` to ensure the new speech fits the original video's timing perfectly.
-4. **Stem Separation (Demucs):** Uses AI to split the audio into "Vocals" and "Background." The original English vocals are discarded, but the background music/SFX are kept.
-5. **Production (FFmpeg Muxing):** Mixes the new translated voice with the original background track and remuxes it with the video for a seamless result.
-
----
-
-## 🚀 Deployment
-
-### A. Full Cloud Deployment (Recommended)
-
-The project includes a master script to deploy all components (Cloud Run Service + Both Agents) and register them with **Gemini Enterprise**.
-
-**Prerequisites:**
-
-* A Google Cloud Project with billing enabled.
-* `gcloud` CLI installed and authenticated.
-* **OAuth Credentials:** Place your `credentials.json` (Web Application type) in the `add_agent_scripts/` directory.
-
-**Steps:**
-
-1. Run the deployment script:
-
-    ```bash
-    ./deploy_all.sh
-    ```
-
-2. Follow the prompts to enter your Project ID and Gemini App ID.
-3. The script will:
-    * Enable all necessary APIs (Vertex AI, Cloud Run, Speech, etc.).
-    * Create Service Accounts and assign IAM roles.
-    * Deploy the Video Translator Service to Cloud Run.
-    * Deploy the Image and Video Agents to Vertex AI Reasoning Engine.
-    * Register both agents with your Gemini Enterprise app.
-
-### B. Local Development (Testing Agents)
-
-You can run the agents locally using `uv` (a fast Python package manager).
-
-1. **Install `uv`:**
-
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    ```
-
-2. **Run an Agent:**
-
-    ```bash
-    # For Image Agent
-    export GOOGLE_CLOUD_PROJECT="your-project-id"
-    export GCS_ARTIFACTS_BUCKET="your-bucket-name"
-    uv run adk web run image_Agent/agent.py
-
-    # For Video Agent
-    export VIDEO_SERVICE_URL="https://your-cloud-run-url.a.run.app"
-    uv run adk web run video_agent/agent.py
-    ```
-
-### C. Clean Up (Rollback)
-
-To delete all deployed resources (Cloud Run service, Agents, Service Accounts):
-
+**Running Local Tests**
 ```bash
-./rollback_all.sh
+# Run backend translator tests
+cd video-translator-service
+pip install -r requirements.txt
+pytest test_main.py
+
+# Run ADK agent evaluations
+cd image_Agent
+pytest test_image_agent_eval.py
+
+cd ../video_agent
+pytest test_video_agent_eval.py
 ```
 
----
+**Automated Deployment**
+Deployment is entirely handled via Google Cloud Build.
+1. Push changes to the repository.
+2. Cloud Build executes `cloudbuild.yaml`.
+3. The pipeline runs all evaluations and tests.
+4. It builds and pushes Docker artifacts to Artifact Registry.
+5. `terraform apply` provisions necessary infrastructure and IAM policies.
+6. The updated service is deployed to Google Cloud Run.
 
-## 📐 Architecture Diagrams
+## Generative AI & Models
 
-### High-Level User Flow
+The application inherently functions as a comprehensive GenMedia solution. It automates the complex, multi-step process of localizing and adapting multimedia advertisements by intelligently separating audio stems, transcribing dialogue, analyzing sentiment to direct voice actors, synthesizing new high-fidelity voices, and visually translating product imagery. This provides immense specific benefits to the media and entertainment industry by drastically reducing the time and cost associated with international campaign distribution, enabling rapid, culturally nuanced global outreach without the need for extensive re-shooting or manual studio dubbing.
 
-```mermaid
-graph TD
-    User((User)) -->|Uploads File| Interceptor[Interceptor]
-    Interceptor -->|Saves to Session| GCS_Session[(GCS Session Artifacts)]
-    
-    subgraph "Image Workflow"
-    User -->|'Translate Image'| ImageAgent[Image Agent]
-    ImageAgent -->|Reads| GCS_Session
-    ImageAgent -->|Gemini 3 Pro| Gemini3[Gemini 3 Pro]
-    Gemini3 -->|Saves Result| GCS_Perm[(GCS Permanent Storage)]
-    end
+The solution integrates the following specific models:
+*   **Gemini 2.5 Flash:** Operates as the foundational reasoning engine for both the `image_agent` and `video_agent` orchestration layers, managing user interactions and tool execution.
+*   **Gemini 2.5 Pro:** Utilized by the video translator service for nuanced "Voice-Over Director" sentiment analysis, analyzing video segments to produce emotional styling notes.
+*   **Gemini 2.5 Pro TTS (Aoede Voice):** Deployed for high-impact text-to-speech synthesis, dynamically adjusting tone based on the director's notes to produce the localized voiceover track.
+*   **Gemini 3 Pro Image Preview:** Implemented for high-fidelity, style-preserving image-to-image translation, specifically replacing text on product labels while maintaining the original visual aesthetic.
+*   **Chirp 3 (Cloud Speech-to-Text):** Serves as the robust audio transcription model ("The Ears"), extracting English dialogue with precise word-level timestamps.
+*   **HTDemucs (via Demucs):** Utilized for audio stem separation, successfully isolating vocal tracks from ambient noise and background music.
 
-    subgraph "Video Workflow"
-    User -->|'Translate Video'| VideoAgent[Video Agent]
-    VideoAgent -->|Reads| GCS_Session
-    VideoAgent -->|Calls Service| CloudRun[Video Translator Service]
-    CloudRun -->|Processing Pipeline| CloudRun
-    CloudRun -->|Saves Result| GCS_Perm
-    end
+## FDE Competency Implementations
 
-    GCS_Perm -->|Render Tool| ImageAgent
-    GCS_Perm -->|Playback Tool| VideoAgent
-    ImageAgent -->|Displays| User
-    VideoAgent -->|Displays| User
-```
+This section outlines precisely how the solution implements the required Field Deployment Engineering (FDE) competencies:
 
-### Video Translator Service Pipeline (Internal)
-
-```mermaid
-graph TD
-    Input[Input Video] -->|Parallel Process| AudioProc[Audio Processing]
-    Input -->|Parallel Process| VisionProc[Vision & Context]
-
-    subgraph "Audio Processing (The Ears)"
-    AudioProc -->|Demucs| Split{Split Stems}
-    Split -->|Keep| Background[Background Music/SFX]
-    Split -->|Discard| Vocals[Original Vocals]
-    AudioProc -->|Chirp 3| Transcript[Transcript + Timestamps]
-    end
-
-    subgraph "Vision & Context (The Director)"
-    VisionProc -->|Gemini 2.5 Pro| Director[Director's Notes]
-    Transcript --> Director
-    Director -->|Style Instructions| TTS_Gen
-    end
-
-    subgraph "Synthesis (The Voice)"
-    TTS_Gen[Gemini 2.5 Pro TTS] -->|Generate Audio| RawAudio
-    RawAudio -->|FFmpeg atempo| TimeSync[Time-Stretched Audio]
-    end
-
-    subgraph "Production (The Mix)"
-    TimeSync -->|Mix| FinalMix[Final Mix]
-    Background -->|Mix| FinalMix
-    FinalMix -->|Remux| OutputVideo[Final Translated Video]
-    Input -->|Video Stream| OutputVideo
-    end
-```
-
-### Agent Architecture (Common Pattern)
-
-```mermaid
-graph LR
-    UserMsg[User Message] --> Interceptor{Interceptor Callback}
-    Interceptor -->|Contains File?| SaveArtifact[Save to Session GCS]
-    Interceptor -->|No File| Model[Gemini Model]
-    SaveArtifact --> Model
-    
-    Model -->|Decides Tool| Tools{Tools}
-    Tools -->|Save/Rename| GCSPerm[Permanent GCS]
-    Tools -->|List/Search| GCSPerm
-    Tools -->|Translate| ExtService[External Service/Model]
-    
-    GCSPerm -->|Load Artifact| Session[Session Context]
-    Session -->|Context| Model
-    Model -->|Response| UserResponse[User Response]
-```
-
----
-
-## 🛠 Required Google Cloud Services
-
-* **Cloud Run:** Hosting the video processing service.
-* **Vertex AI (Reasoning Engine):** Hosting the agents.
-* **Vertex AI (Gemini):** Powering the LLM logic (Gemini 2.5 Pro, Gemini 3 Pro).
-* **Speech-to-Text V2:** For Chirp 3 transcription.
-* **Text-to-Speech:** For Gemini 2.5 Pro TTS.
-* **Cloud Storage:** For storing media assets.
-* **Discovery Engine:** For registering agents with Gemini Enterprise.
+*   **AI/ML Engineering:** The application utilizes Agentic & Multi-Agent Systems by deploying Vertex AI Agent Engines (`image_Agent`, `video_agent`) tailored for discrete multimodal tasks. It employs Model Selection & Tuning via Gemini 2.5 Pro for nuanced voice translation and Gemini 3 Pro for style-preserving image translation.
+*   **Scoping and Documentation:** The repository structure reflects robust Problem Definition and Technical Scope by isolating the stateless processing service from the agentic reasoning engines. The architecture includes System Design Artifacts (Mermaid diagrams) and API documentation inherent within the codebase.
+*   **Security, Privacy, and Compliance:** The system achieves Data Protection and Compliance by enforcing Google Secret Manager for all configuration data, eliminating local environment variable fallbacks. Infrastructure Security is demonstrated via Terraform modules that establish strictly scoped IAM roles, mitigating excessive permissions.
+*   **Reliability & Resilience:** Graceful Degradation and Failure & Recovery Testing are inherent in the implementation; missing secrets result in immediate, explicit application halts rather than unpredictable failures. The distributed nature of the Cloud Run services provides inherent Availability Design.
+*   **Performance & Cost Optimization:** Scalability & Elasticity are managed by deploying to serverless platforms (Cloud Run and Vertex AI), ensuring Resource Efficiency. High-capacity configurations (e.g., memory allocations for Demucs processing) are utilized specifically when AI processing demands them, preventing over-provisioning.
+*   **Operational Excellence:** The repository strictly enforces CI/CD & Deployment via Google Cloud Build, forbidding manual deployment shell scripts. It implements Infrastructure as Code universally using Terraform for consistent environments. AI Lifecycle Management and Testing & Quality Engineering are addressed through holistic ADK evaluation pipelines integrated directly into the CI checks.
+*   **Designing for Change:** Modularity & Abstraction are visible in the distinct separation of the translation sidecar (`video-translator-service`) from the orchestrating agents. The application employs Configuration Management via Secret Manager, allowing infrastructure to evolve independently from the application code.

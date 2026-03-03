@@ -1,0 +1,14 @@
+{
+  "eval_set_id": "video_agent_eval",
+  "eval_cases": [
+    {
+      "evalId": "1",
+      "data": [
+        {
+          "role": "user",
+          "content": "List my videos."
+        }
+      ]
+    }
+  ]
+}

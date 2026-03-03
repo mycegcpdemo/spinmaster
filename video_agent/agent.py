@@ -12,6 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Video Agent (Vertex AI Agent Engine)
+
+This module implements the 'robust_video_agent', an advanced multimodal orchestration
+engine built with the Google Agent Development Kit (ADK) and Vertex AI. It is
+architected to manage the lifecycle of video assets, bridging the gap between
+interactive user sessions and permanent Google Cloud Storage.
+
+Crucially, it acts as the intelligent routing layer for the Spinmaster system,
+directing compute-intensive tasks (like emotion-aware video translation) to the
+dedicated Cloud Run sidecar service. It strictly utilizes Google Secret Manager
+for operational security.
+"""
+
 import os
 import logging
 import textwrap
@@ -28,14 +42,48 @@ from google.adk.artifacts import GcsArtifactService
 from google.adk.sessions import VertexAiSessionService
 from vertexai import agent_engines
 import vertexai
+from google.cloud import secretmanager
 
 # ---- Logging Setup ----
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", force=True)
 
+def get_secret(secret_id: str, project_id: str, version_id: str = "latest") -> str:
+    """
+    Fetch a secret payload from Google Cloud Secret Manager.
+    
+    This function securely retrieves sensitive configuration data, adhering to
+    the principle of least privilege and eliminating hardcoded secrets in the
+    codebase. It interacts directly with the Google Cloud Secret Manager API.
+    
+    Args:
+        secret_id (str): The identifier of the secret to retrieve.
+        project_id (str): The Google Cloud project ID hosting the secret.
+        version_id (str, optional): The version of the secret. Defaults to "latest".
+        
+    Returns:
+        str: The decoded secret payload as a UTF-8 string.
+    """
+    client = secretmanager.SecretManagerServiceClient()
+    name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
+    response = client.access_secret_version(request={"name": name})
+    return response.payload.data.decode("UTF-8")
+
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
 LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 STAGING_BUCKET = os.getenv("STAGING_BUCKET", "gs://adk_demo_staging")
-GCS_ARTIFACTS_BUCKET = os.getenv("GCS_ARTIFACTS_BUCKET", "gcs_artifact_svc_bucket")
+
+try:
+    GCS_ARTIFACTS_BUCKET = get_secret("gcs-artifacts-bucket", PROJECT_ID)
+except Exception as e:
+    logging.error(f"Failed to load GCS_ARTIFACTS_BUCKET from Secret Manager: {e}")
+    raise RuntimeError("Critical Secret Missing: gcs-artifacts-bucket")
+
+try:
+    VIDEO_SERVICE_URL = get_secret("video-service-url", PROJECT_ID)
+except Exception as e:
+    logging.error(f"Failed to load VIDEO_SERVICE_URL from Secret Manager: {e}")
+    raise RuntimeError("Critical Secret Missing: video-service-url")
+
 
 vertexai.init(project=PROJECT_ID, location=LOCATION, staging_bucket=STAGING_BUCKET)
 
@@ -45,8 +93,19 @@ async def intercept_to_session_callback(
     llm_request: LlmRequest
 ) -> Optional[LlmResponse]:
     """
-    Step 1: Intercept user message and save raw video bytes into 
-    temporary SESSION artifacts. This makes the data available for tools.
+    Intercepts the user message and saves raw video bytes into temporary SESSION artifacts.
+    
+    This callback is vital for multimodal awareness. It parses user requests for raw
+    video inline data and synchronizes it with the transient ADK session state.
+    This guarantees that subsequent agent tools have the context necessary to act
+    on user-provided assets without needing a secondary upload step.
+    
+    Args:
+        callback_context (CallbackContext): The current ADK invocation context.
+        llm_request (LlmRequest): The incoming request payload containing user input.
+        
+    Returns:
+        Optional[LlmResponse]: None, enabling the core LLM processing to proceed.
     """
     if not llm_request.contents or llm_request.contents[-1].role != "user":
         return None
@@ -73,8 +132,19 @@ async def save_video_to_permanent_storage_tool(
     final_name: Optional[str] = None
 ) -> str:
     """
-    Step 2: Persist a video from the temporary session memory to the 
-    permanent 'videos/' folder in GCS.
+    Persists a video from temporary session memory to permanent Google Cloud Storage.
+    
+    This function bridges transient and permanent state by moving a specified
+    artifact from the active session context into the 'videos/' directory of
+    the persistent GCS artifacts bucket.
+    
+    Args:
+        tool_context (ToolContext): The ADK tool context providing artifact access.
+        video_name_in_session (str): The identifier of the video in the current session.
+        final_name (Optional[str], optional): The desired permanent filename. Defaults to None.
+        
+    Returns:
+        str: A status message indicating success or failure of the operation.
     """
     bucket_name = GCS_ARTIFACTS_BUCKET
     final_name = final_name or video_name_in_session
@@ -125,7 +195,7 @@ async def translate_video_tool(
 ) -> str:
     """Uses Cloud Run Sidecar for emotion-aware video translation."""
     bucket_name = GCS_ARTIFACTS_BUCKET
-    service_url = os.getenv('VIDEO_SERVICE_URL')
+    service_url = VIDEO_SERVICE_URL
     cloud_run_url = f"{service_url}/translate-raw"
     
     try:
@@ -199,43 +269,48 @@ app = agent_engines.AdkApp(
     session_service_builder=lambda: VertexAiSessionService(project=PROJECT_ID, location=LOCATION),
 )
 
-# Deployment logic remains unchanged...
-print("Deploying Fully-Instrumented Video Agent to Vertex AI...")
+if __name__ == "__main__":
+    # Deployment logic remains unchanged...
+    print("Deploying Fully-Instrumented Video Agent to Vertex AI...")
 
-RESOURCE_NAME = os.getenv("VIDEO_AGENT_RESOURCE_NAME")
-VIDEO_SERVICE_URL = os.getenv("VIDEO_SERVICE_URL")
-SERVICE_ACCOUNT = os.getenv("SERVICE_ACCOUNT")
+    RESOURCE_NAME = os.getenv("VIDEO_AGENT_RESOURCE_NAME")
+    SERVICE_ACCOUNT = os.getenv("SERVICE_ACCOUNT")
 
-deployment_config = {
-    "agent_engine": app,
-    "display_name": "callback_video_agent_v1",
-    "requirements": [
-        "cloudpickle==3.0",
-        "pydantic==2.12.5",
-        "google-adk>=1.22.1",
-        "google-cloud-aiplatform[adk,agent-engines]>=1.135.0",
-        "google-cloud-storage>=3.8.0",
-        "google-cloud-logging>=3.11.0",
-        "google-genai>=1.60.0",
-        "requests>=2.32.5",
-        "google-auth>=2.23.0",
-    ],
-    "env_vars": {
-        "GCS_ARTIFACTS_BUCKET": GCS_ARTIFACTS_BUCKET,
-        "VIDEO_SERVICE_URL": VIDEO_SERVICE_URL,
-    },
-    "min_instances": 2,
-    "max_instances": 10,
-}
+    deployment_config = {
+        "agent_engine": app,
+        "display_name": "callback_video_agent_v1",
+        "requirements": [
+            "cloudpickle>=3.0",
+            "pydantic>=2.6.1",
+            "google-cloud-aiplatform[adk,agent-engines]>=1.135.0",
+            "google-cloud-storage>=3.8.0",
+            "google-cloud-logging>=3.11.0",
+            "google-genai>=1.60.0",
+            "google-cloud-secret-manager>=2.21.0",
+            "requests>=2.32.5",
+            "google-auth>=2.23.0",
+        ],
+        "env_vars": {
+            "GCS_ARTIFACTS_BUCKET": GCS_ARTIFACTS_BUCKET,
+            "VIDEO_SERVICE_URL": VIDEO_SERVICE_URL,
+        },
+        "min_instances": 2,
+        "max_instances": 10,
+    }
 
-if SERVICE_ACCOUNT:
-    deployment_config["service_account"] = SERVICE_ACCOUNT
+    import glob
+    local_wheels = glob.glob("wheels/*.whl")
+    if local_wheels:
+        deployment_config["extra_packages"] = local_wheels
 
-if RESOURCE_NAME:
-    print(f"Updating existing reasoning engine: {RESOURCE_NAME}")
-    remote_agent = agent_engines.update(resource_name=RESOURCE_NAME, **deployment_config)
-else:
-    print("Creating new reasoning engine...")
-    remote_agent = agent_engines.create(**deployment_config)
+    if SERVICE_ACCOUNT:
+        deployment_config["service_account"] = SERVICE_ACCOUNT
 
-print(f"Update complete! Resource: {remote_agent.resource_name}")
+    if RESOURCE_NAME:
+        print(f"Updating existing reasoning engine: {RESOURCE_NAME}")
+        remote_agent = agent_engines.update(resource_name=RESOURCE_NAME, **deployment_config)
+    else:
+        print("Creating new reasoning engine...")
+        remote_agent = agent_engines.create(**deployment_config)
+
+    print(f"Update complete! Resource: {remote_agent.resource_name}")
