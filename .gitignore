@@ -110,3 +110,6 @@ secret*
 # Agent Development Kit (ADK) specifics or general temporary
 tmp/
 temp/
+
+# Ignore folders
+.gemini/
